@@ -1,0 +1,15 @@
+1，首先删除SPIdevice设备，在arm/arch/mach2440/smdk-2440.c spi_register_boardinfo()
+2,添加自己的SPI设备add_spi_device_to_bus实例，首先查看是否有SPIdev设备，没有则建立
+3，设置SPI信息，每次传输的字节数，和片选 波特率
+4，设置片选注意
+static void  spi_cs_set_level(unsigned line_id, int lvl) {
+
+    gpio_request(S3C2410_GPH(14), "SPI_CS");
+    gpio_direction_output(line_id, lvl);
+};
+
+static struct s3c2416_spi_csinfo s3c2416_spi1_csinfo = {
+    .fb_delay = 100,
+    .line = S3C2410_GPH(14),
+    .set_level = spi_cs_set_level,
+};

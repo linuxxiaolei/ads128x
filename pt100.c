@@ -1,0 +1,1056 @@
+
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/init.h>
+#include <linux/delay.h>
+#include <asm/irq.h>
+#include <mach/regs-gpio.h> //定义s3c2410的GPIO
+#include <mach/hardware.h> //定义操作s3c2410的GPIO的函数 
+#include <linux/device.h> //自动创建设备文件应该包含的头文件
+#include <mach/gpio.h>
+#include <linux/module.h>
+#include <linux/of_gpio.h>
+#include <linux/spi/spi.h>
+#include <linux/delay.h>
+#include <asm/uaccess.h>
+
+
+
+/*
+#define GPIO_DRDY				S3C2410_GPG(0)
+#define GPIO_START				S3C2410_GPG(1)
+#define GPIO_RESET				S3C2410_GPG(2)
+*/
+
+#define ADS124X_REG_MUX0      0x00
+#define ADS124X_REG_VBIAS     0x01
+#define ADS124X_REG_MUX1      0x02
+#define ADS124X_REG_SYS0      0x03
+#define ADS124X_REG_OFC0      0x04
+#define ADS124X_REG_OFC1      0x05
+#define ADS124X_REG_OFC2      0x06
+#define ADS124X_REG_FSC0      0x07
+#define ADS124X_REG_FSC1      0x08
+#define ADS124X_REG_FSC2      0x09
+#define ADS124X_REG_IDAC0     0x0a
+#define ADS124X_REG_IDAC1     0x0b
+#define ADS124X_REG_GPIOCFG   0x0c
+#define ADS124X_REG_GPIODIR   0x0d
+#define ADS124X_REG_GPIODAT   0x0e
+
+/* SPI Commands */
+#define ADS124X_USER_DEFINE   0x64
+#define ADS124X_SPI_INIT      (0x00 + ADS124X_USER_DEFINE)
+#define ADS124X_SPI_RADC      (0x01 + ADS124X_USER_DEFINE)
+#define ADS124X_SPI_PT2T      (0x02 + ADS124X_USER_DEFINE)
+#define ADS124X_SPI_TEST      (0x03 + ADS124X_USER_DEFINE)
+
+
+#define ADS124X_SPI_WAKEUP    0x00
+#define ADS124X_SPI_SLEEP     0x02
+#define ADS124X_SPI_SYNC1     0x04
+#define ADS124X_SPI_SYNC2     0x04
+#define ADS124X_SPI_RESET     0x06
+#define ADS124X_SPI_NOP       0xff
+#define ADS124X_SPI_RDATA     0x12
+#define ADS124X_SPI_RDATAC    0x14
+#define ADS124X_SPI_SDATAC    0x16
+#define ADS124X_SPI_RREG      0x20
+#define ADS124X_SPI_WREG      0x40
+#define ADS124X_SPI_SYSOCAL   0x60
+#define ADS124X_SPI_SYSGCAL   0x61
+#define ADS124X_SPI_SELFOCAL  0x62
+
+#define ADS124X_SINGLE_REG    0x00
+#define ADS124X_DOUBLE_REG    0x01
+
+// about SYS0 : System Control Register 0
+#define         PGAGain_1                         0x00
+#define         PGAGain_2                         0x10
+#define         PGAGain_4                         0x20
+#define         PGAGain_8                         0x30
+#define         PGAGain_16                        0x40
+#define         PGAGain_32                        0x50
+#define         PGAGain_64                        0x60
+#define         PGAGain_128                       0x70
+#define         DataRate_5                        0x00
+#define         DataRate_10                         0x01
+#define         DataRate_20                         0x02
+#define         DataRate_40                         0x03
+#define         DataRate_80                         0x04
+#define         DataRate_160                        0x05
+#define         DataRate_320                        0x06
+#define         DataRate_640                0x07
+#define         DataRate_1000                0x08
+#define         DataRate_2000                0x09
+// about MUX1: Multiplexer Control Register 1
+#define  CLK_Inter                                 0x00
+#define  CLK_Exter                                 0x80
+#define  REF_Inter_AlwaysOn                         0x20  // selecte internal reference and always open  
+#define  REF_Inter_AlwaysOff                        0x00  // selecte internal reference and always off 
+#define  SELT_REF0                                0x00                                
+#define  SELT_REF1                                  0x08
+#define  SELT_Inter                                 0x10
+#define  SELT_Inter_REF0                            0x18
+
+
+// about IDAC0: IDAC Control Register 0
+#define  Drdy_Mode_EN                 0x08
+#define  Drdy_Mode_DIS                 0x00
+
+// the magnitude of the excitation current.
+// The IDACs require the internal reference to be on.
+#define  IMAG_Off                         0x00
+#define  IMAG_50                        0x01
+#define  IMAG_100                        0x02
+#define  IMAG_250                        0x03
+#define  IMAG_500                        0x04
+#define  IMAG_750                        0x05
+#define  IMAG_1000                        0x06
+#define  IMAG_1500                        0x07
+
+// about IDAC1: IDAC Control Register 1
+// select the output pin for the first current source DAC.
+#define         IDAC1_AIN0                        0x00
+#define         IDAC1_AIN1                        0x10
+#define         IDAC1_AIN2                        0x20
+#define         IDAC1_AIN3                        0x30
+#define         IDAC1_AIN4                        0x40
+#define         IDAC1_AIN5                        0x50
+#define         IDAC1_AIN6                        0x60
+#define         IDAC1_AIN7                        0x70
+#define         IDAC1_IEXT1                0x80
+#define         IDAC1_IEXT2                0x90
+#define         IDAC1_OFF                        0xC0
+
+// select the output pin for the second current source DAC.
+#define         IDAC2_AIN0                        0x00
+#define         IDAC2_AIN1                        0x01
+#define         IDAC2_AIN2                        0x02
+#define         IDAC2_AIN3                        0x03
+#define         IDAC2_AIN4                        0x04
+#define         IDAC2_AIN5                        0x05
+#define         IDAC2_AIN6                        0x06
+#define         IDAC2_AIN7                        0x07
+#define         IDAC2_IEXT1                0x08
+#define         IDAC2_IEXT2                0x09
+#define         IDAC2_OFF                        0x0C
+
+/************************************************************************/
+/* ads1248 macroinstruction                                             */
+/************************************************************************/
+// about MUX0: Multiplexer Control Register 0
+#define  P_AIN0                            0x00
+#define  P_AIN1                            0x08
+#define  P_AIN2                            0x10
+#define  P_AIN3                            0x18
+#define  P_AIN4                            0x20
+#define  P_AIN5                            0x28
+#define  P_AIN6                            0x30
+#define  P_AIN7                            0x38
+#define  N_AIN0                            0x00
+#define  N_AIN1                            0x01
+#define  N_AIN2                            0x02
+#define  N_AIN3                            0x03
+#define  N_AIN4                            0x04
+#define  N_AIN5                            0x05
+#define  N_AIN6                            0x06
+#define  N_AIN7                            0x07
+
+
+#if 0
+const float pt100_table[1001] =/*PT100 0-100度对应的电阻值，0.1度间隔*/
+{
+    100.0000, 100.0391, 100.0782, 100.1172, 100.1563, 100.1954, 100.2345, 100.2736, 100.3126, 100.3517,
+    100.3908, 100.4298, 100.4689, 100.5080, 100.5470, 100.5861, 100.6252, 100.6642, 100.7033, 100.7424,
+    100.7814, 100.8205, 100.8595, 100.8986, 100.9377, 100.9767, 101.0158, 101.0548, 101.0939, 101.1329,
+    101.1720, 101.2110, 101.2501, 101.2891, 101.3282, 101.3672, 101.4062, 101.4453, 101.4843, 101.5234,
+    101.5624, 101.6014, 101.6405, 101.6795, 101.7185, 101.7576, 101.7966, 101.8356, 101.8747, 101.9137,
+    101.9527, 101.9917, 102.0308, 102.0698, 102.1088, 102.1478, 102.1868, 102.2259, 102.2649, 102.3039,
+    102.3429, 102.3819, 102.4209, 102.4599, 102.4989, 102.5380, 102.5770, 102.6160, 102.6550, 102.6940,
+    102.7330, 102.7720, 102.8110, 102.8500, 102.8890, 102.9280, 102.9670, 103.0060, 103.0450, 103.0840,
+    103.1229, 103.1619, 103.2009, 103.2399, 103.2789, 103.3179, 103.3569, 103.3958, 103.4348, 103.4738,
+    103.5128, 103.5518, 103.5907, 103.6297, 103.6687, 103.7077, 103.7466, 103.7856, 103.8246, 103.8636,
+    103.9025, 103.9415, 103.9805, 104.0194, 104.0584, 104.0973, 104.1363, 104.1753, 104.2142, 104.2532,
+    104.2921, 104.3311, 104.3701, 104.4090, 104.4480, 104.4869, 104.5259, 104.5648, 104.6038, 104.6427,
+    104.6816, 104.7206, 104.7595, 104.7985, 104.8374, 104.8764, 104.9153, 104.9542, 104.9932, 105.0321,
+    105.0710, 105.1100, 105.1489, 105.1878, 105.2268, 105.2657, 105.3046, 105.3435, 105.3825, 105.4214,
+    105.4603, 105.4992, 105.5381, 105.5771, 105.6160, 105.6549, 105.6938, 105.7327, 105.7716, 105.8105,
+    105.8495, 105.8884, 105.9273, 105.9662, 106.0051, 106.0440, 106.0829, 106.1218, 106.1607, 106.1996,
+    106.2385, 106.2774, 106.3163, 106.3552, 106.3941, 106.4330, 106.4719, 106.5108, 106.5496, 106.5885,
+    106.6274, 106.6663, 106.7052, 106.7441, 106.7830, 106.8218, 106.8607, 106.8996, 106.9385, 106.9774,
+    107.0162, 107.0551, 107.0940, 107.1328, 107.1717, 107.2106, 107.2495, 107.2883, 107.3272, 107.3661,
+    107.4049, 107.4438, 107.4826, 107.5215, 107.5604, 107.5992, 107.6381, 107.6769, 107.7158, 107.7546,
+    107.7935, 107.8324, 107.8712, 107.9101, 107.9489, 107.9877, 108.0266, 108.0654, 108.1043, 108.1431,
+    108.1820, 108.2208, 108.2596, 108.2985, 108.3373, 108.3762, 108.4150, 108.4538, 108.4926, 108.5315,
+    108.5703, 108.6091, 108.6480, 108.6868, 108.7256, 108.7644, 108.8033, 108.8421, 108.8809, 108.9197,
+    108.9585, 108.9974, 109.0362, 109.0750, 109.1138, 109.1526, 109.1914, 109.2302, 109.2690, 109.3078,
+    109.3467, 109.3855, 109.4243, 109.4631, 109.5019, 109.5407, 109.5795, 109.6183, 109.6571, 109.6959,
+    109.7347, 109.7734, 109.8122, 109.8510, 109.8898, 109.9286, 109.9674, 110.0062, 110.0450, 110.0838,
+    110.1225, 110.1613, 110.2001, 110.2389, 110.2777, 110.3164, 110.3552, 110.3940, 110.4328, 110.4715,
+    110.5103, 110.5491, 110.5879, 110.6266, 110.6654, 110.7042, 110.7429, 110.7817, 110.8204, 110.8592,
+    110.8980, 110.9367, 110.9755, 111.0142, 111.0530, 111.0917, 111.1305, 111.1693, 111.2080, 111.2468,
+    111.2855, 111.3242, 111.3630, 111.4017, 111.4405, 111.4792, 111.5180, 111.5567, 111.5954, 111.6342,
+    111.6729, 111.7117, 111.7504, 111.7891, 111.8279, 111.8666, 111.9053, 111.9441, 111.9828, 112.0215,
+    112.0602, 112.0990, 112.1377, 112.1764, 112.2151, 112.2538, 112.2926, 112.3313, 112.3700, 112.4087,
+    112.4474, 112.4861, 112.5248, 112.5636, 112.6023, 112.6410, 112.6797, 112.7184, 112.7571, 112.7958,
+    112.8345, 112.8732, 112.9119, 112.9506, 112.9893, 113.0280, 113.0667, 113.1054, 113.1441, 113.1828,
+    113.2215, 113.2602, 113.2988, 113.3375, 113.3762, 113.4149, 113.4536, 113.4923, 113.5309, 113.5696,
+    113.6083, 113.6470, 113.6857, 113.7243, 113.7630, 113.8017, 113.8404, 113.8790, 113.9177, 113.9564,
+    113.9950, 114.0337, 114.0724, 114.1110, 114.1497, 114.1884, 114.2270, 114.2657, 114.3043, 114.3430,
+    114.3817, 114.4203, 114.4590, 114.4976, 114.5363, 114.5749, 114.6136, 114.6522, 114.6909, 114.7295,
+    114.7681, 114.8068, 114.8454, 114.8841, 114.9227, 114.9614, 115.0000, 115.0386, 115.0773, 115.1159,
+    115.1545, 115.1932, 115.2318, 115.2704, 115.3091, 115.3477, 115.3863, 115.4249, 115.4636, 115.5022,
+    115.5408, 115.5794, 115.6180, 115.6567, 115.6953, 115.7339, 115.7725, 115.8111, 115.8497, 115.8883,
+    115.9270, 115.9656, 116.0042, 116.0428, 116.0814, 116.1200, 116.1586, 116.1972, 116.2358, 116.2744,
+    116.3130, 116.3516, 116.3902, 116.4288, 116.4674, 116.5060, 116.5446, 116.5831, 116.6217, 116.6603,
+    116.6989, 116.7375, 116.7761, 116.8147, 116.8532, 116.8918, 116.9304, 116.9690, 117.0076, 117.0461,
+    117.0847, 117.1233, 117.1619, 117.2004, 117.2390, 117.2776, 117.3161, 117.3547, 117.3933, 117.4318,
+    117.4704, 117.5090, 117.5475, 117.5861, 117.6247, 117.6632, 117.7018, 117.7403, 117.7789, 117.8174,
+    117.8560, 117.8945, 117.9331, 117.9716, 118.0102, 118.0487, 118.0873, 118.1258, 118.1644, 118.2029,
+    118.2414, 118.2800, 118.3185, 118.3571, 118.3956, 118.4341, 118.4727, 118.5112, 118.5497, 118.5883,
+    118.6268, 118.6653, 118.7038, 118.7424, 118.7809, 118.8194, 118.8579, 118.8965, 118.9350, 118.9735,
+    119.0120, 119.0505, 119.0890, 119.1276, 119.1661, 119.2046, 119.2431, 119.2816, 119.3201, 119.3586,
+    119.3971, 119.4356, 119.4741, 119.5126, 119.5511, 119.5896, 119.6281, 119.6666, 119.7051, 119.7436,
+    119.7821, 119.8206, 119.8591, 119.8976, 119.9361, 119.9746, 120.0131, 120.0516, 120.0900, 120.1285,
+    120.1670, 120.2055, 120.2440, 120.2824, 120.3209, 120.3594, 120.3979, 120.4364, 120.4748, 120.5133,
+    120.5518, 120.5902, 120.6287, 120.6672, 120.7056, 120.7441, 120.7826, 120.8210, 120.8595, 120.8980,
+    120.9364, 120.9749, 121.0133, 121.0518, 121.0902, 121.1287, 121.1672, 121.2056, 121.2441, 121.2825,
+    121.3210, 121.3594, 121.3978, 121.4363, 121.4747, 121.5132, 121.5516, 121.5901, 121.6285, 121.6669,
+    121.7054, 121.7438, 121.7822, 121.8207, 121.8591, 121.8975, 121.9360, 121.9744, 122.0128, 122.0513,
+    122.0897, 122.1281, 122.1665, 122.2049, 122.2434, 122.2818, 122.3202, 122.3586, 122.3970, 122.4355,
+    122.4739, 122.5123, 122.5507, 122.5891, 122.6275, 122.6659, 122.7043, 122.7427, 122.7811, 122.8195,
+    122.8579, 122.8963, 122.9347, 122.9731, 123.0115, 123.0499, 123.0883, 123.1267, 123.1651, 123.2035,
+    123.2419, 123.2803, 123.3187, 123.3571, 123.3955, 123.4338, 123.4722, 123.5106, 123.5490, 123.5874,
+    123.6257, 123.6641, 123.7025, 123.7409, 123.7792, 123.8176, 123.8560, 123.8944, 123.9327, 123.9711,
+    124.0095, 124.0478, 124.0862, 124.1246, 124.1629, 124.2013, 124.2396, 124.2780, 124.3164, 124.3547,
+    124.3931, 124.4314, 124.4698, 124.5081, 124.5465, 124.5848, 124.6232, 124.6615, 124.6999, 124.7382,
+    124.7766, 124.8149, 124.8533, 124.8916, 124.9299, 124.9683, 125.0066, 125.0450, 125.0833, 125.1216,
+    125.1600, 125.1983, 125.2366, 125.2749, 125.3133, 125.3516, 125.3899, 125.4283, 125.4666, 125.5049,
+    125.5432, 125.5815, 125.6199, 125.6582, 125.6965, 125.7348, 125.7731, 125.8114, 125.8497, 125.8881,
+    125.9264, 125.9647, 126.0030, 126.0413, 126.0796, 126.1179, 126.1562, 126.1945, 126.2328, 126.2711,
+    126.3094, 126.3477, 126.3860, 126.4243, 126.4626, 126.5009, 126.5392, 126.5775, 126.6157, 126.6540,
+    126.6923, 126.7306, 126.7689, 126.8072, 126.8455, 126.8837, 126.9220, 126.9603, 126.9986, 127.0368,
+    127.0751, 127.1134, 127.1517, 127.1899, 127.2282, 127.2665, 127.3048, 127.3430, 127.3813, 127.4195,
+    127.4578, 127.4961, 127.5343, 127.5726, 127.6109, 127.6491, 127.6874, 127.7256, 127.7639, 127.8021,
+    127.8404, 127.8786, 127.9169, 127.9551, 127.9934, 128.0316, 128.0699, 128.1081, 128.1464, 128.1846,
+    128.2228, 128.2611, 128.2993, 128.3376, 128.3758, 128.4140, 128.4523, 128.4905, 128.5287, 128.5670,
+    128.6052, 128.6434, 128.6816, 128.7199, 128.7581, 128.7963, 128.8345, 128.8728, 128.9110, 128.9492,
+    128.9874, 129.0256, 129.0638, 129.1021, 129.1403, 129.1785, 129.2167, 129.2549, 129.2931, 129.3313,
+    129.3695, 129.4077, 129.4459, 129.4841, 129.5223, 129.5605, 129.5987, 129.6369, 129.6751, 129.7133,
+    129.7515, 129.7897, 129.8279, 129.8661, 129.9043, 129.9425, 129.9807, 130.0188, 130.0570, 130.0952,
+    130.1334, 130.1716, 130.2098, 130.2479, 130.2861, 130.3243, 130.3625, 130.4006, 130.4388, 130.4770,
+    130.5152, 130.5533, 130.5915, 130.6297, 130.6678, 130.7060, 130.7442, 130.7823, 130.8205, 130.8586,
+    130.8968, 130.9350, 130.9731, 131.0113, 131.0494, 131.0876, 131.1257, 131.1639, 131.2020, 131.2402,
+    131.2783, 131.3165, 131.3546, 131.3928, 131.4309, 131.4691, 131.5072, 131.5453, 131.5835, 131.6216,
+    131.6597, 131.6979, 131.7360, 131.7742, 131.8123, 131.8504, 131.8885, 131.9267, 131.9648, 132.0029,
+    132.0411, 132.0792, 132.1173, 132.1554, 132.1935, 132.2317, 132.2698, 132.3079, 132.3460, 132.3841,
+    132.4222, 132.4603, 132.4985, 132.5366, 132.5747, 132.6128, 132.6509, 132.6890, 132.7271, 132.7652,
+    132.8033, 132.8414, 132.8795, 132.9176, 132.9557, 132.9938, 133.0319, 133.0700, 133.1081, 133.1462,
+    133.1843, 133.2224, 133.2604, 133.2985, 133.3366, 133.3747, 133.4128, 133.4509, 133.4889, 133.5270,
+    133.5651, 133.6032, 133.6413, 133.6793, 133.7174, 133.7555, 133.7935, 133.8316, 133.8697, 133.9078,
+    133.9458, 133.9839, 134.0220, 134.0600, 134.0981, 134.1361, 134.1742, 134.2123, 134.2503, 134.2884,
+    134.3264, 134.3645, 134.4025, 134.4406, 134.4786, 134.5167, 134.5547, 134.5928, 134.6308, 134.6689,
+    134.7069, 134.7450, 134.7830, 134.8211, 134.8591, 134.8971, 134.9352, 134.9732, 135.0112, 135.0493,
+    135.0873, 135.1253, 135.1634, 135.2014, 135.2394, 135.2774, 135.3155, 135.3535, 135.3915, 135.4295,
+    135.4676, 135.5056, 135.5436, 135.5816, 135.6196, 135.6577, 135.6957, 135.7337, 135.7717, 135.8097,
+    135.8477, 135.8857, 135.9237, 135.9617, 135.9997, 136.0377, 136.0757, 136.1137, 136.1517, 136.1897,
+    136.2277, 136.2657, 136.3037, 136.3417, 136.3797, 136.4177, 136.4557, 136.4937, 136.5317, 136.5697,
+    136.6077, 136.6456, 136.6836, 136.7216, 136.7596, 136.7976, 136.8355, 136.8735, 136.9115, 136.9495,
+    136.9875, 137.0254, 137.0634, 137.1014, 137.1393, 137.1773, 137.2153, 137.2532, 137.2912, 137.3292,
+    137.3671, 137.4051, 137.4431, 137.4810, 137.5190, 137.5569, 137.5949, 137.6329, 137.6708, 137.7088,
+    137.7467, 137.7847, 137.8226, 137.8606, 137.8985, 137.9365, 137.9744, 138.0123, 138.0503, 138.0882,
+    138.1262, 138.1641, 138.2020, 138.2400, 138.2779, 138.3158, 138.3538, 138.3917, 138.4296, 138.4676,
+    138.5055
+};
+#endif
+
+static const u16 ads124x_sample_freq_avail[] = { 5, 10, 20, 40, 80, 160,320, 640, 1000, 2000};
+static const u8 ads124x_sample_gain_avail[] = { 1, 2, 4, 8, 16, 32, 64, 128 };
+
+struct s3c2416_spi_csinfo {
+	u8 fb_delay;
+	unsigned line;
+	void (*set_level)(unsigned line_id, int lvl);
+};
+
+
+typedef struct  ads124x_s{
+	struct spi_device *spi;
+	struct class *ads124x_class;
+	int 			 major;
+	int 			 drdy_gpio;
+	int 			 start_gpio;
+	int 			 reset_gpio;
+	int 			 spics_gpio;
+	u32 			 vref_mv;
+	int 			 sample_rate;	//采样率
+	struct mutex 	 lock;
+	spinlock_t       spi_lock;
+	struct semaphore fop_sem;
+	char			 user_buff[128];
+}ads124x;
+
+ads124x	ads124x_state;
+
+static int ads124x_stop_reading_continuously(struct ads124x_s *st)
+{
+	u8 cmd[1];
+	int ret;
+	cmd[0] = ADS124X_SPI_SDATAC;
+
+	ret = spi_write(st->spi, cmd, 1);
+
+	return ret;
+}
+
+static int ads124x_read_reg(struct ads124x_s *st, u8 reg, u8 *buf)
+{
+	u8 read_cmd[2];
+	int ret;
+
+	read_cmd[0] = ADS124X_SPI_RREG | reg;
+	read_cmd[1] = ADS124X_SINGLE_REG;
+	spi_write(st->spi, read_cmd, 2);
+
+	ret = spi_read(st->spi, buf, 1);
+
+	return ret;
+}
+static int ads124x_write_reg(struct ads124x_s *st,
+			     u8 reg, u8 *buf, size_t len)
+{
+	u8 write_cmd[3];
+	int ret;
+
+	write_cmd[0] = ADS124X_SPI_WREG | reg;
+	write_cmd[1] = ADS124X_SINGLE_REG;
+	write_cmd[2] = *buf;
+
+	ret = spi_write(st->spi, write_cmd, 3);
+
+	return ret;
+}
+static u32 ads124x_sample_to_32bit(u8 *sample)
+{
+	int sample32 = 0;
+	sample32 = sample[0] << 16;
+	sample32 |= sample[1] << 8;
+	sample32 |= sample[2];
+	//return sign_extend32(sample32, 23);
+	return 0;
+}
+static void wait_for_drdy(int drdy_gpio)
+{
+	u8 drdy;
+
+	for (;;) {
+		drdy = gpio_get_value(drdy_gpio);
+		if (!drdy)
+			return;
+		//usleep(1000);
+	}
+}
+
+static void ads124x_start(struct ads124x_s *st)
+{
+	gpio_set_value(st->start_gpio, 1);
+	msleep(200);
+	return;
+}
+
+static int ads124x_convert(struct ads124x_s *st)
+{
+	u8 cmd[1], res[3];
+	u32 res32;
+	int ret;
+	cmd[0] = ADS124X_SPI_RDATA;
+
+	ret = spi_write(st->spi, cmd, 1);
+	wait_for_drdy(st->drdy_gpio);
+	ret = spi_read(st->spi, res, 3);
+	res32 = ads124x_sample_to_32bit(res);
+	return res32;
+}
+static void ads124x_reset(struct ads124x_s *st)
+{
+	u8 cmd[1];
+	int ret;
+
+	gpio_set_value(st->reset_gpio, 0);
+	gpio_set_value(st->reset_gpio, 1);
+
+	cmd[0] = ADS124X_SPI_RESET;
+	ret = spi_write(st->spi, cmd, 1);
+
+	msleep(200);		/* FIXME: that's arbitrary. */
+	return;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	ADS1248_SetGain
+//函数功能:		设置增益
+//入口参数：	Gain：放大倍数
+//出口参数：	无
+//-------------------------------------------------------------------------------
+static int ads124x_set_pga_gain(struct ads124x_s *st, u8 gain)
+{
+	int ret;
+	u8 sys0;
+
+	mutex_lock(&st->lock);
+
+	ret = ads124x_read_reg(st, ADS124X_REG_SYS0, &sys0);
+
+	if (ret < 0)
+		goto release_lock_and_return;
+
+	sys0 = (sys0 & 0x8f) | (gain << 4);
+
+	ret = ads124x_write_reg(st, ADS124X_REG_SYS0, &sys0, 1);
+
+release_lock_and_return:
+	mutex_unlock(&st->lock);
+	return ret;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	ADS1248_SetSPS
+//函数功能:		设置采样率
+//入口参数：	SPSData：采样率设置数据
+//出口参数：	无
+//-------------------------------------------------------------------------------
+static int ads124x_set_sample_rate(struct ads124x_s *st)
+{
+	u8 sys0;
+	int ret;
+	ret = ads124x_read_reg(st, ADS124X_REG_SYS0, &sys0);
+	if (ret < 0)
+		return ret;
+
+	sys0 |= 0x0f & st->sample_rate;
+
+	ret = ads124x_write_reg(st, ADS124X_REG_SYS0, &sys0, 1);
+
+	return ret;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	ADS1248_SelInputChannel
+//函数功能:		选择模拟信号输入通道
+//入口参数：	MuxData：正输入通道|负输入通道  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+void ads124x_set_inputchannel2(struct ads124x_s *st,char muxData)
+{
+	u8 sys0;
+    ads124x_read_reg(st,ADS124X_REG_MUX0,&sys0);
+	sys0&=~(0x3F);
+	sys0|=muxData&(0x3F);
+	ads124x_write_reg(st,ADS124X_REG_MUX0,&sys0,1);
+}
+//-------------------------------------------------------------------------------
+//函数名称：	ADS1248_SetMuxCal
+//函数功能:		选择系统监测源
+//入口参数：	MuxData：监测源数据
+//出口参数：	无
+//-------------------------------------------------------------------------------
+
+void ads124x_select_muxcal(struct ads124x_s *st,u8 MuxData)
+{
+	u8 sys0;
+	ads124x_read_reg(st,ADS124X_REG_MUX1,&sys0);
+	sys0&=~(0x07);
+	sys0|=MuxData&(0x07);
+	ads124x_write_reg(st,ADS124X_REG_MUX1,&sys0,1);
+}
+//-------------------------------------------------------------------------------
+//函数名称：	
+//函数功能:		
+//入口参数：	  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+void ads124x_set_idac(struct ads124x_s *st,u8 idac1, u8 idac2, u8 idacImage)
+{
+	u8 write_cmd[4];
+	int ret;
+
+	write_cmd[0] = ADS124X_SPI_WREG | ADS124X_REG_IDAC0;
+	write_cmd[1] = ADS124X_DOUBLE_REG;
+	write_cmd[2] = idacImage;
+	write_cmd[3] = idac1|idac2;
+	ret = spi_write(st->spi, write_cmd, 4);
+	return;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	
+//函数功能:		
+//入口参数：	  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+void ads124x_set_gainandrate(struct ads124x_s *st,u8 pgaGain, u8 dataRate)
+{
+	u8 write_cmd[3];
+	int ret;
+
+	write_cmd[0] = ADS124X_SPI_WREG | ADS124X_REG_SYS0;
+	write_cmd[1] = ADS124X_SINGLE_REG;
+	write_cmd[2] = pgaGain|dataRate;
+	ret = spi_write(st->spi, write_cmd, 3);
+	return;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	
+//函数功能:		
+//入口参数：	  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+void ads124x_set_inputchannel(struct ads124x_s *st,u8 positiveChannel, u8 negativeChannel)
+{
+	u8 write_cmd[3];
+	int ret;
+
+	write_cmd[0] = ADS124X_SPI_WREG | ADS124X_REG_MUX0;
+	write_cmd[1] = ADS124X_SINGLE_REG;
+	write_cmd[2] = positiveChannel|negativeChannel;
+	ret = spi_write(st->spi, write_cmd, 3);
+	return;
+}
+//-------------------------------------------------------------------------------
+//函数名称：	
+//函数功能:		
+//入口参数：	  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+void ads124x_set_reference(struct ads124x_s *st,u8 interVrefOnOff, u8 refSelected)
+{
+	u8 write_cmd[3];
+	int ret;
+	write_cmd[0] = ADS124X_SPI_WREG | ADS124X_REG_MUX1;
+	write_cmd[1] = ADS124X_SINGLE_REG;
+	write_cmd[2] = interVrefOnOff|refSelected;
+	ret = spi_write(st->spi, write_cmd, 3);
+	return;
+}
+
+//-------------------------------------------------------------------------------
+//函数名称：	
+//函数功能:		
+//入口参数：	  
+//出口参数：	无
+//-------------------------------------------------------------------------------
+u32 ads124x_readadc(struct ads124x_s *st)
+{
+
+	u32 adcVal = 0;
+	
+	adcVal = ads124x_convert(st);
+
+	return adcVal;
+}
+
+void ads124x_spi_test(struct ads124x_s *st)
+{
+   	u8 write_cmd[3],res[3];
+	int ret;
+	write_cmd[0] = 0x30;
+	write_cmd[1] = 0x31;
+	write_cmd[2] = 0x32;
+	
+	ret = spi_write(st->spi, write_cmd, 3);
+    printk(KERN_INFO"spi_write ret:%d\n",ret);
+	ret = spi_read(st->spi, res, 3);
+    printk(KERN_INFO"spi_read ret:%d\n",ret);
+
+	printk(KERN_INFO"spi_read:%s\n",res);
+}
+#if 0
+/*******************************************************************************
+* 函数名称： Name: ADS1248_ResToTemp
+* 函数功能:  : 二分法查表，将PT100的电阻值转为对应温度0-100
+* 入口参数：                : float resistance
+* 出口参数：                   : float
+* @date                           : 2014/10/06
+*******************************************************************************/
+float ads124x_res2temp(float resistance)
+{
+    u16 low = 0;
+    u16 mid = sizeof(pt100_table) / sizeof(pt100_table[0]) / 2;
+    u16 high = sizeof(pt100_table) / sizeof(pt100_table[0]) - 1;
+
+    if((resistance < pt100_table[0]) || (resistance > pt100_table[high]))
+    {
+        return -1; // 超限，不做特殊处理
+    }
+
+    while(high >= low)
+    {
+        mid = (high + low) / 2;
+
+        if(resistance >= pt100_table[mid])
+        {
+            if(resistance < pt100_table[mid + 1])
+            {
+                return (0.1 * low + (resistance - pt100_table[mid]) * 0.1 / ((pt100_table[mid + 1]) - pt100_table[mid]));
+                break;
+            }
+            else
+            {
+                low = mid + 1;
+            }
+        }
+        else if(resistance < pt100_table[mid])
+        {
+            high = mid - 1;
+        }
+    }
+}
+#endif
+
+static void ads124x_init(struct ads124x_s *st)
+{
+#if 0
+       char buf1,buf2;
+       buf1=0x28;
+       buf2=0x08;
+       gpio_set_value(st->start_gpio,0);
+       gpio_set_value(st->reset_gpio,0);
+       mdelay(4);
+       gpio_set_value(st->start_gpio,1);
+       gpio_set_value(st->reset_gpio,1);
+
+       mdelay(10);
+       printk(KERN_INFO "ads124x_open version 1.2 \n");
+       ads124x_reset(st);
+
+       ads124x_write_reg(st,ADS124X_REG_MUX1,&buf1,1);
+       ads124x_write_reg(st,ADS124X_REG_SYS0,&buf2,1);
+       ads124x_set_inputchannel(st,P_AIN0,N_AIN1);
+       #ifdef  USE_INTER_VREF
+       ads124x_set_reference(st,REF_Inter_AlwaysOn,SELT_REF0); // 设置内部基准为参考源
+       #else
+       ads124x_set_reference(st,REF_Inter_AlwaysOn,SELT_Inter);   // 设置外部REF0为参考源SELT_Inter
+       #endif
+       mdelay(10);
+
+       ads124x_set_idac(st,IDAC1_AIN0, IDAC2_AIN1, IMAG_1000);
+
+       ads124x_set_gainandrate(st,PGAGain_8,DataRate_20);
+#endif
+        u8 write_cmd[2],res[3];//max7219实例
+        int ret;
+        write_cmd[0] = 0x0C;
+        write_cmd[1] = 0x01;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x09;
+        write_cmd[1] = 0xFF;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x0A;
+        write_cmd[1] = 0x08;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x0B;
+        write_cmd[1] = 0x03;
+        ret = spi_write(st->spi, write_cmd, 2);
+
+        write_cmd[0] = 0x01;
+        write_cmd[1] = 0x02;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x02;
+        write_cmd[1] = 0x06;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x03;
+        write_cmd[1] = 0x07;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x04;
+        write_cmd[1] = 0x08;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x05;
+        write_cmd[1] = 0x02;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x06;
+        write_cmd[1] = 0x04;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x07;
+        write_cmd[1] = 0x04;
+        ret = spi_write(st->spi, write_cmd, 2);
+        write_cmd[0] = 0x08;
+        write_cmd[1] = 0x04;
+        ret = spi_write(st->spi, write_cmd, 2);
+
+}
+
+
+
+
+static int ads124x_open(struct inode *inode, struct file *file)
+{
+	int status = 0;
+    ads124x *ads1248 = &ads124x_state;
+	if (down_interruptible(&ads124x_state.fop_sem)) 
+		return -ERESTARTSYS;
+		
+    printk(KERN_INFO "ads124x_open \n");
+	ads124x_init(&ads124x_state);
+	
+    up(&ads124x_state.fop_sem);
+    
+    file->private_data = ads1248;
+	return status;
+}
+static int ads124x_release(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static ssize_t ads124x_write(struct file *file, const char __user *data,size_t len, loff_t *ppos)
+{
+	ssize_t status = 0;
+    ads124x *ads1248 = file->private_data;
+    
+		
+    if (down_interruptible(&ads1248->fop_sem)) 
+            return -ERESTARTSYS;
+
+    if (copy_from_user(ads1248->user_buff, data, len))
+    {
+		status = -EFAULT;
+	}	
+
+	if (!strnicmp(ads1248->user_buff, "start", 5)) 
+	{
+		
+	}
+            
+    up(&ads1248->fop_sem);    
+
+     
+	return status;
+}
+static ssize_t ads124x_read(struct file *filp, char __user *buff, size_t count,
+			loff_t *offp)
+{
+	size_t len;
+	ssize_t status = 0;
+    struct  ads124x_s *ads1248 = filp->private_data;
+    
+	if (!buff) 
+		return -EFAULT;
+
+	if (*offp > 0) 
+		return 0;
+		
+    if (down_interruptible(&ads1248->fop_sem)) 
+            return -ERESTARTSYS;
+
+    sprintf(ads1248->user_buff, "%s\n","Running");
+		
+	len = strlen(ads1248->user_buff);
+ 
+	if (len < count) 
+		count = len;
+
+	if (copy_to_user(buff, ads1248->user_buff, count))  {
+		printk(KERN_ALERT "ads1248_read(): copy_to_user() failed\n");
+		status = -EFAULT;
+	} else {
+		*offp += count;
+		status = count;
+	}
+            
+    up(&ads1248->fop_sem);        
+	return 0;
+}
+static int ads124x_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
+{
+    u32     nValue;       
+    ads124x *ads1248 = &ads124x_state;//file->private_data;
+    switch(cmd)
+    {
+        case ADS124X_SPI_WAKEUP:
+        printk(KERN_ALERT "user_buff:%s\n",ads1248->user_buff);
+        break;
+        case ADS124X_SPI_SLEEP:
+        break;
+        case ADS124X_SPI_SYNC1:
+        break;
+        case ADS124X_SPI_NOP:
+        break;
+        case ADS124X_SPI_RDATA:
+        break;
+        case ADS124X_SPI_RDATAC:
+        break;
+        case ADS124X_SPI_SDATAC:
+        break;
+        case ADS124X_SPI_RREG:
+        break;
+        case ADS124X_SPI_WREG:
+        break;
+        case ADS124X_SPI_SYSOCAL:
+        break;
+        case ADS124X_SPI_SYSGCAL:
+        break;
+        case ADS124X_SPI_SELFOCAL:
+        break;
+        case ADS124X_SPI_RADC:
+        printk(KERN_INFO "read adc\n");
+        ads124x_readadc(ads1248);
+        break;
+        case ADS124X_SPI_PT2T:
+        nValue = ads124x_readadc(ads1248);
+        printk(KERN_INFO "%s.%d read adc value%d\n",ads1248->user_buff,ads1248->major,nValue);
+        
+        //nAdcValue = ads124x_res2temp(nValue);
+        //printk(KERN_INFO "PT100:%d,Temp:%f\n",nValue,nAdcValue);
+        break;
+        case ADS124X_SPI_TEST:
+        ads124x_spi_test(ads1248);
+        break;
+        default:
+        break;
+    }
+	return 0;
+}
+
+static const struct file_operations ads1248_fops = {
+	.owner	=	THIS_MODULE,
+	.open	= 	ads124x_open,
+	.read	= 	ads124x_read,
+	.write	= 	ads124x_write,
+	.unlocked_ioctl		= 	ads124x_ioctl,
+	.release   = 	ads124x_release,
+};
+
+static int ads124x_probe(struct spi_device *spi)
+{
+	int ret;
+	int flags;
+	struct device *dev;
+	struct ads124x_s *st;
+	st = &ads124x_state;
+	mutex_init(&ads124x_state.lock);
+	
+	spin_lock_irqsave(&st->spi_lock, flags);
+	st->spi = spi_dev_get(spi);
+	spin_unlock_irqrestore(&st->spi_lock, flags);
+    /*
+    gpio_request(S3C2410_GPG(0), "DRDY");
+	gpio_request(S3C2410_GPG(1), "START");
+	gpio_request(S3C2410_GPG(2), "RESET");
+
+	gpio_direction_input(S3C2410_GPG(0));
+	gpio_direction_output(S3C2410_GPG(1), 0);//s3c_gpio_cfgpin(S3C2410_GPB(1), S3C_GPIO_OUTPUT);s3c2410_gpio_setpin(unsigned int pin, unsigned int to)
+	gpio_direction_output(S3C2410_GPG(2), 0);
+
+	st->drdy_gpio  = S3C2410_GPG(0); 
+	st->start_gpio = S3C2410_GPG(1);
+	st->reset_gpio = S3C2410_GPG(2);
+
+	gpio_set_value(st->start_gpio,0);
+    gpio_set_value(st->reset_gpio,1);
+	*/
+	st->major = 0;
+	ret = register_chrdev(st->major,"ads1248",&ads1248_fops);//注册字符设备
+	if(ret < 0)
+	{
+		printk("register chr dev failed \n");
+		return -1;
+	}
+
+	st->major = ret;
+	sprintf(st->user_buff,"%s","ads1248");
+	printk(KERN_INFO "ads1248: major number %d\n", st->major);
+	st->ads124x_class = class_create(THIS_MODULE,"ads1248");	//设备类、、
+	if(IS_ERR(st->ads124x_class))
+	{
+		 dev_err(&st->spi->dev, "ads1248: failed to create ads1248 class\n");
+		 goto char_dev_remove;
+	}
+	dev = device_create(st->ads124x_class,NULL,MKDEV(st->major,0),NULL,"ads1248");//创建设备节点
+	if(IS_ERR(st->ads124x_class))
+	{
+		dev_err(&st->spi->dev, "ads1248: failed to create ads8344 device\n");
+	        goto char_dev_remove;
+	}
+	return 0;
+	
+	char_dev_remove:
+	class_destroy(ads124x_state.ads124x_class);
+ 	unregister_chrdev(st->major, "ads1248");//注销字符设备
+	return -1;
+}
+
+static int __devexit ads1248_remove(struct spi_device *spi)
+{
+/*
+     gpio_free(S3C2410_GPG(0));
+	 gpio_free(S3C2410_GPG(1));
+	 gpio_free(S3C2410_GPG(2));
+	 */
+	 device_destroy(ads124x_state.ads124x_class, MKDEV(ads124x_state.major, 0));
+	 class_destroy(ads124x_state.ads124x_class);
+	 unregister_chrdev(ads124x_state.major, "ads1248");
+	 return 0;
+}
+
+static void  spi_cs_set_level(unsigned line_id, int lvl) {
+
+    gpio_request(S3C2410_GPH(14), "SPI_CS");
+    gpio_direction_output(line_id, lvl);
+};
+
+static struct s3c2416_spi_csinfo s3c2416_spi1_csinfo = {
+    .fb_delay = 100,
+    .line = S3C2410_GPH(14),
+    .set_level = spi_cs_set_level,
+};
+
+static struct spi_driver ads124x_driver = {
+	.driver = {
+		.name = "ads1248",
+		.owner = THIS_MODULE,
+	},
+	.probe 	= ads124x_probe,
+	.remove 	= __devexit_p(ads1248_remove),
+};	
+
+static struct spi_board_info	ads124x_master = {
+	.modalias	 = "ads1248",
+	.max_speed_hz = 8000000,
+	.bus_num	=  0,
+	.chip_select 	= 0,
+	.mode		= SPI_MODE_0,
+    .irq = IRQ_EINT0,
+	.controller_data = &s3c2416_spi1_csinfo,
+};
+
+
+
+static int  add_spi_device_to_bus(void)
+{
+    struct spi_master *spi_master;
+    struct spi_device *spi_device;
+    struct device *pdev;
+    char buff[64];
+    int status = 0;
+
+    spi_master = spi_busnum_to_master(0);
+    if (!spi_master) 
+    {
+        printk(KERN_ALERT "spi_busnum_to_master(0) returned NULL\n" );
+        printk(KERN_ALERT "Missing modprobe omap2_mcspi?\n");
+        return -1;
+    }
+
+    spi_device = spi_alloc_device(spi_master);
+    if (!spi_device) 
+    {
+        put_device(&spi_master->dev);
+        printk(KERN_ALERT "spi_alloc_device() failed\n");
+        return -1;
+    }
+
+    /* specify a chip select line */
+    spi_device->chip_select = 0;//SPI_BUS_CS1;
+    /* Check whether this SPI bus.cs is already claimed */
+    snprintf(buff, sizeof(buff), "%s.%u", 
+             dev_name(&spi_device->master->dev),spi_device->chip_select);
+    printk(KERN_INFO "dev_name %s\n",buff);
+    pdev = bus_find_device_by_name(spi_device->dev.bus, NULL, buff);
+    if (pdev)
+    {
+        printk(KERN_INFO " spidev0.0 is exist\n");
+        spi_dev_put(spi_device);
+        if (pdev->driver && pdev->driver->name && strcmp("ads1248", pdev->driver->name)) 
+        {
+            printk(KERN_ALERT "Driver [%s] already registered for %s\n",pdev->driver->name, buff);
+            status = -1;
+        } 
+    } 
+    else 
+    {
+        printk(KERN_INFO "add spidev0.0 to kernel\n");
+        spi_device->max_speed_hz = 15000000;//SPI_BUS_SPEED;
+        spi_device->mode = SPI_MODE_0;
+        spi_device->bits_per_word = 8;
+        spi_device->irq = -1;
+        spi_device->controller_state = NULL;
+        spi_device->controller_data = &s3c2416_spi1_csinfo;
+        strlcpy(spi_device->modalias, "ads1248", sizeof("ads1248") );
+        status = spi_add_device(spi_device);
+        //spi = spi_new_device( master, &ads124x_master);  
+        if (status < 0) 
+        {    
+            spi_dev_put(spi_device);
+            printk(KERN_ALERT "spi_add_device() failed: %d\n", status);        
+        }                
+    }
+
+    put_device(&spi_master->dev);
+    return status;
+}
+#if 0
+void add_spi_device_master()
+{
+	struct spi_master *master;
+	struct spi_device	*spi;
+	printk("ads1248_init \n");
+	status = spi_register_driver(&ads124x_driver);
+	printk( KERN_INFO "spi : Initiating module" );
+	if(status < 0)
+	{
+		printk( KERN_ALERT " spi driver not register" );
+	}
+	master = spi_busnum_to_master(0);
+	if(!master)
+	{
+		printk( KERN_ALERT "spi_busnum_to_master(%d) returned NULL\n", 0 );
+           	return -1;
+	}
+	spi = spi_new_device( master, &ads124x_master);
+	if(!spi)
+	{
+		put_device( &master->dev );
+      		printk( KERN_ALERT "spi_alloc_device() failed\n" );
+           	return -1;
+	}
+
+	 spi->chip_select = 0;
+	 spi->max_speed_hz = 15000000;
+	 spi->mode = SPI_MODE_0;
+  	 spi->bits_per_word = 8;
+	 spi->irq = -1;
+	 strlcpy( spi->modalias, "ads1248", sizeof("ads1248") );
+
+	 put_device( &master->dev );
+
+}
+#endif
+static int __init ads1248_init(void)
+{
+	
+	int status;
+	spin_lock_init(&ads124x_state.spi_lock);
+	sema_init(&ads124x_state.fop_sem, 1);
+	
+    add_spi_device_to_bus();
+    status = spi_register_driver(&ads124x_driver);
+    
+	printk( KERN_INFO "spi : Initiating module" );
+	if(status < 0)
+	{
+		printk( KERN_ALERT " spi driver not register" );
+	}
+    return status;
+}
+
+static void __exit ads1248_exit(void)
+{
+    printk("ads1248_exit\n");
+    spi_unregister_driver(&ads124x_driver);
+    spi_unregister_device(&ads124x_state.spi);
+}
+
+module_init(ads1248_init);
+module_exit(ads1248_exit);
+
+MODULE_DESCRIPTION("Driver for ads1248");
+MODULE_AUTHOR("wxl, Inc");
+MODULE_LICENSE("GPL");
